@@ -5,8 +5,9 @@
 // six-as-ifs of the Diamond Sūtra's closing line supply the vocabulary for
 // what one continuous gesture sounds and looks like, not six separate toys.
 
-import { recordFrame } from "./history";
+import { recordEvent, recordFrame } from "./history";
 import { drawRibbons } from "./ribbon";
+import { drawShadows } from "./shadows";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#stage");
 if (!canvas) throw new Error("missing #stage canvas");
@@ -118,6 +119,10 @@ function ensureAudio(): AudioGraph {
   return audio;
 }
 
+export function getAudio(): AudioGraph | null {
+  return audio;
+}
+
 function currentFrequency(): number {
   return MIN_FREQ * Math.pow(MAX_FREQ / MIN_FREQ, 1 - pointer.y);
 }
@@ -144,6 +149,7 @@ function pluckBubble(): void {
   osc.stop(now + 0.55);
 
   bubbles.push({ x: pointer.x, y: pointer.y, bornAt: performance.now(), hue: hueFor(pointer.y) });
+  recordEvent(performance.now(), "bubble", pointer.x, pointer.y);
 }
 
 function lightningCrack(): void {
@@ -170,6 +176,7 @@ function lightningCrack(): void {
   source.stop(now + 0.15);
 
   flashes.push({ x: pointer.x, y: pointer.y, bornAt: performance.now(), angle: Math.random() * Math.PI * 2 });
+  recordEvent(performance.now(), "lightning", pointer.x, pointer.y);
 }
 
 function setPointer(x: number, y: number, now: number): void {
@@ -256,6 +263,7 @@ function render(now: number): void {
     draw.fillRect(0, 0, width, height);
   }
 
+  drawShadows(draw, width, height, getAudio);
   drawRibbons(draw, width, height);
 
   // The point itself: brighter and larger the more it is singing.
