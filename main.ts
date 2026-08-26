@@ -6,6 +6,7 @@
 // what one continuous gesture sounds and looks like, not six separate toys.
 
 import { recordEvent, recordFrame } from "./history";
+import { drawFlash } from "./lightning";
 import { drawRibbons } from "./ribbon";
 import { drawShadows } from "./shadows";
 
@@ -42,6 +43,7 @@ interface Flash {
   y: number;
   bornAt: number;
   angle: number;
+  speed: number;
 }
 
 const MIN_FREQ = 90;
@@ -52,10 +54,10 @@ const BASE_VOICE_LEVEL = 0.22;
 const PRESENCE_TAU_UP = 0.06;
 const PRESENCE_TAU_DOWN = 2.4;
 const MOVE_WINDOW_MS = 150;
-const LIGHTNING_SPEED = 3.2; // normalised units per second
+const LIGHTNING_SPEED = 2.2; // normalised units per second
 const LIGHTNING_COOLDOWN_MS = 260;
 const BUBBLE_LIFE_MS = 750;
-const FLASH_LIFE_MS = 140;
+const FLASH_LIFE_MS = 220;
 const KEY_SPEED = 0.7; // normalised units per second
 
 const pointer: Point = { x: 0.5, y: 0.42 };
@@ -152,10 +154,11 @@ function pluckBubble(): void {
   recordEvent(performance.now(), "bubble", pointer.x, pointer.y);
 }
 
-function lightningCrack(): void {
+function lightningCrack(speed: number): void {
   const graph = ensureAudio();
   const { ctx, master, noiseBuffer } = graph;
   const now = ctx.currentTime;
+  const intensity = Math.min(1.6, speed / LIGHTNING_SPEED - 1);
 
   const source = ctx.createBufferSource();
   source.buffer = noiseBuffer;
@@ -165,8 +168,9 @@ function lightningCrack(): void {
   bandpass.Q.value = 5.5;
 
   const gain = ctx.createGain();
+  const peak = 0.45 + intensity * 0.3;
   gain.gain.setValueAtTime(0.0001, now);
-  gain.gain.exponentialRampToValueAtTime(0.45, now + 0.004);
+  gain.gain.exponentialRampToValueAtTime(peak, now + 0.004);
   gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
 
   source.connect(bandpass);
@@ -175,7 +179,25 @@ function lightningCrack(): void {
   source.start(now);
   source.stop(now + 0.15);
 
-  flashes.push({ x: pointer.x, y: pointer.y, bornAt: performance.now(), angle: Math.random() * Math.PI * 2 });
+  const rumble = ctx.createOscillator();
+  rumble.type = "sine";
+  rumble.frequency.setValueAtTime(90, now);
+  rumble.frequency.exponentialRampToValueAtTime(40, now + 0.18);
+  const rumbleGain = ctx.createGain();
+  rumbleGain.gain.setValueAtTime(0.18 + intensity * 0.1, now);
+  rumbleGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
+  rumble.connect(rumbleGain);
+  rumbleGain.connect(master);
+  rumble.start(now);
+  rumble.stop(now + 0.2);
+
+  flashes.push({
+    x: pointer.x,
+    y: pointer.y,
+    bornAt: performance.now(),
+    angle: Math.random() * Math.PI * 2,
+    speed,
+  });
   recordEvent(performance.now(), "lightning", pointer.x, pointer.y);
 }
 
@@ -191,7 +213,7 @@ function setPointer(x: number, y: number, now: number): void {
 
   if (audio && speed > LIGHTNING_SPEED && now - lastLightningAt > LIGHTNING_COOLDOWN_MS) {
     lastLightningAt = now;
-    lightningCrack();
+    lightningCrack(speed);
   }
 }
 
@@ -308,23 +330,7 @@ function render(now: number): void {
       flashes.splice(i, 1);
       continue;
     }
-    const alpha = 1 - age / FLASH_LIFE_MS;
-    const fx = flash.x * width;
-    const fy = flash.y * height;
-    draw.strokeStyle = `hsla(200, 100%, 92%, ${alpha})`;
-    draw.lineWidth = 1.5;
-    draw.beginPath();
-    let x = fx;
-    let y = fy;
-    let angle = flash.angle;
-    draw.moveTo(x, y);
-    for (let seg = 0; seg < 4; seg++) {
-      angle += (Math.random() - 0.5) * 1.4;
-      x += Math.cos(angle) * 18;
-      y += Math.sin(angle) * 18;
-      draw.lineTo(x, y);
-    }
-    draw.stroke();
+    drawFlash(draw, flash, age, width, height);
   }
 }
 
