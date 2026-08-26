@@ -31,6 +31,10 @@ const MAX_CUTOFF = 5200;
 const BASE_VOICE_LEVEL = 0.22;
 const BUBBLE_LIFE_MS = 750;
 const FLASH_LIFE_MS = 220;
+// The glow radius below was tuned against the old, larger orb. The orb
+// shrank a lot since; scale the glow down with it so shadows still read as
+// smaller echoes instead of dwarfing the thing they're echoing.
+const SHADOW_ORB_SCALE = 0.33;
 
 function frequencyForY(y: number): number {
   return MIN_FREQ * Math.pow(MAX_FREQ / MIN_FREQ, 1 - y);
@@ -129,7 +133,7 @@ function drawGlow(
 ): void {
   const px = frame.x * width;
   const py = frame.y * height;
-  const radius = (18 + frame.presence * 40) * (0.5 + config.alphaScale);
+  const radius = (18 + frame.presence * 40) * (0.5 + config.alphaScale) * SHADOW_ORB_SCALE;
   const hue = hueFor(frame.y);
   const glow = ctx.createRadialGradient(px, py, 0, px, py, radius);
   glow.addColorStop(

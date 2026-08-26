@@ -28,6 +28,9 @@ header {
   inset: 0 0 auto 0;
   z-index: 2;
   padding: 0.75rem 1rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
 }
 
 nav a {
@@ -40,6 +43,45 @@ nav a {
 nav a:hover,
 nav a:focus-visible {
   opacity: 1;
+}
+
+.hand-ui {
+  text-align: right;
+}
+
+.hand-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #cfc9e8;
+  opacity: 0.55;
+  font: inherit;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.hand-toggle:hover,
+.hand-toggle:focus-visible {
+  opacity: 1;
+}
+
+.hand-toggle[aria-pressed="true"] {
+  opacity: 0.85;
+}
+
+.hand-note {
+  margin: 0.15rem 0 0;
+  font-size: 0.65rem;
+  color: #6f6886;
+}
+
+#hand-video {
+  position: absolute;
+  width: 160px;
+  height: 120px;
+  left: -9999px;
+  top: 0;
 }
 
 main {
