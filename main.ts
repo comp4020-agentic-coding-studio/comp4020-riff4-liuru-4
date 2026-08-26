@@ -26,18 +26,37 @@ interface AudioGraph {
   noiseBuffer: AudioBuffer;
 }
 
+interface BubbleRing {
+  delay: number;
+  gapAngle: number;
+  gapWidth: number;
+  maxRadius: number;
+}
+
+interface BubbleFragment {
+  angle: number;
+  dist: number;
+  size: number;
+  delay: number;
+}
+
 interface Bubble {
   x: number;
   y: number;
   bornAt: number;
   hue: number;
+  rings: BubbleRing[];
+  fragments: BubbleFragment[];
 }
 
-interface Flash {
+interface TrailPoint {
   x: number;
   y: number;
   bornAt: number;
-  angle: number;
+  speed: number;
+  life: number;
+  zig: number;
+  branch: number;
 }
 
 const MIN_FREQ = 90;
@@ -50,18 +69,27 @@ const PRESENCE_TAU_DOWN = 2.4;
 const MOVE_WINDOW_MS = 150;
 const LIGHTNING_SPEED = 3.2; // normalised units per second
 const LIGHTNING_COOLDOWN_MS = 260;
-const BUBBLE_LIFE_MS = 750;
-const FLASH_LIFE_MS = 140;
+const BUBBLE_LIFE_MS = 420; // total burst duration, within the 350-500ms window
+const CLICK_PULSE_MS = 220;
+const ORB_BASE_RADIUS = 8;
+const ORB_PRESENCE_RADIUS = 23;
+const TRAIL_SPEED_REF = 2.4; // normalised units per second, for trail scaling
+const TRAIL_LIFE_BASE_MS = 320;
+const TRAIL_LIFE_BONUS_MS = 350; // faster points live longer, within the 0.3-0.8s window
+const TRAIL_PRUNE_MS = TRAIL_LIFE_BASE_MS + TRAIL_LIFE_BONUS_MS;
+const TRAIL_JITTER_BASE = 4; // px of zigzag at rest
+const TRAIL_JITTER_SPEED = 24; // extra px of zigzag at full speed
 const KEY_SPEED = 0.7; // normalised units per second
 
 const pointer: Point = { x: 0.5, y: 0.42 };
 let lastMoveAt = -Infinity;
 let lastLightningAt = 0;
+let lastClickAt = -Infinity;
 let presence = 0;
 let lastFrameAt = 0;
 
 const bubbles: Bubble[] = [];
-const flashes: Flash[] = [];
+const trail: TrailPoint[] = [];
 const heldKeys = new Set<string>();
 
 let audio: AudioGraph | null = null;
@@ -140,7 +168,28 @@ function pluckBubble(): void {
   osc.start(now);
   osc.stop(now + 0.55);
 
-  bubbles.push({ x: pointer.x, y: pointer.y, bornAt: performance.now(), hue: hueFor(pointer.y) });
+  const clickedAt = performance.now();
+  lastClickAt = clickedAt;
+  const hue = Math.min(268, Math.max(205, hueFor(pointer.y)));
+
+  // 2-3 rings, each with its own gap that widens as it expands, so the
+  // membrane reads as breaking apart rather than a clean pop.
+  const ringCount = 2 + Math.round(Math.random());
+  const rings: BubbleRing[] = Array.from({ length: ringCount }, (_, i) => ({
+    delay: i * 30,
+    gapAngle: Math.random() * Math.PI * 2,
+    gapWidth: 0.3 + Math.random() * 0.35,
+    maxRadius: 16 + i * 6,
+  }));
+
+  const fragments: BubbleFragment[] = Array.from({ length: 5 }, () => ({
+    angle: Math.random() * Math.PI * 2,
+    dist: 14 + Math.random() * 12,
+    size: 0.8 + Math.random() * 1.2,
+    delay: Math.random() * 40,
+  }));
+
+  bubbles.push({ x: pointer.x, y: pointer.y, bornAt: clickedAt, hue, rings, fragments });
 }
 
 function lightningCrack(): void {
@@ -165,8 +214,6 @@ function lightningCrack(): void {
   gain.connect(master);
   source.start(now);
   source.stop(now + 0.15);
-
-  flashes.push({ x: pointer.x, y: pointer.y, bornAt: performance.now(), angle: Math.random() * Math.PI * 2 });
 }
 
 function setPointer(x: number, y: number, now: number): void {
@@ -178,6 +225,18 @@ function setPointer(x: number, y: number, now: number): void {
   pointer.x = clamp01(x);
   pointer.y = clamp01(y);
   lastMoveAt = now;
+
+  const life = TRAIL_LIFE_BASE_MS + clamp01(speed / TRAIL_SPEED_REF) * TRAIL_LIFE_BONUS_MS;
+  trail.push({
+    x: pointer.x,
+    y: pointer.y,
+    bornAt: now,
+    speed,
+    life,
+    zig: (Math.random() - 0.5) * 2,
+    branch: Math.random(),
+  });
+  while (trail.length && now - trail[0]!.bornAt > TRAIL_PRUNE_MS) trail.shift();
 
   if (audio && speed > LIGHTNING_SPEED && now - lastLightningAt > LIGHTNING_COOLDOWN_MS) {
     lastLightningAt = now;
@@ -252,10 +311,86 @@ function render(now: number): void {
     draw.fillRect(0, 0, width, height);
   }
 
-  // The point itself: brighter and larger the more it is singing.
+  // Lightning trail: a jagged, layered electric trace of recent motion —
+  // each segment kinks at a fixed random midpoint (set once, at capture, so
+  // it doesn't strobe) and occasionally throws a short branch. Faster
+  // points get wider kinks and live longer, so the trace grows with speed.
+  if (trail.length > 1) {
+    draw.save();
+    draw.globalCompositeOperation = "lighter";
+    draw.lineCap = "round";
+    draw.lineJoin = "round";
+    for (let i = 1; i < trail.length; i++) {
+      const prev = trail[i - 1]!;
+      const cur = trail[i]!;
+      const age = now - cur.bornAt;
+      if (age > cur.life) continue;
+      const fade = Math.pow(clamp01(1 - age / cur.life), 1.7);
+      if (fade <= 0) continue;
+      const speedFactor = clamp01(cur.speed / TRAIL_SPEED_REF);
+      const hue = Math.min(268, Math.max(205, hueFor(cur.y)));
+
+      const x0 = prev.x * width;
+      const y0 = prev.y * height;
+      const x1 = cur.x * width;
+      const y1 = cur.y * height;
+      const segDx = x1 - x0;
+      const segDy = y1 - y0;
+      const segLen = Math.hypot(segDx, segDy) || 1;
+      const nx = -segDy / segLen;
+      const ny = segDx / segLen;
+      const jitter = (TRAIL_JITTER_BASE + speedFactor * TRAIL_JITTER_SPEED) * cur.zig;
+      const kink1x = x0 + segDx * 0.35 + nx * jitter;
+      const kink1y = y0 + segDy * 0.35 + ny * jitter;
+      const kink2x = x0 + segDx * 0.68 - nx * jitter * 0.6;
+      const kink2y = y0 + segDy * 0.68 - ny * jitter * 0.6;
+
+      // Soft outer glow.
+      draw.strokeStyle = `hsla(${hue}, 90%, 68%, ${fade * (0.14 + speedFactor * 0.22)})`;
+      draw.lineWidth = 2 + fade * (3 + speedFactor * 6);
+      draw.shadowColor = `hsla(${hue}, 95%, 72%, ${fade * 0.6})`;
+      draw.shadowBlur = 5 + fade * 9;
+      draw.beginPath();
+      draw.moveTo(x0, y0);
+      draw.lineTo(kink1x, kink1y);
+      draw.lineTo(kink2x, kink2y);
+      draw.lineTo(x1, y1);
+      draw.stroke();
+
+      // Bright electric core.
+      draw.shadowBlur = 2 + fade * 4;
+      draw.strokeStyle = `hsla(${hue + 8}, 100%, 90%, ${fade * (0.26 + speedFactor * 0.4)})`;
+      draw.lineWidth = 0.7 + fade * 1.6;
+      draw.stroke();
+
+      // Occasional side branch, only on quicker gestures.
+      if (cur.branch > 0.72 && speedFactor > 0.25) {
+        const branchLen = (8 + speedFactor * 20) * fade;
+        const side = cur.zig >= 0 ? 1 : -1;
+        const bx = kink1x + nx * side * branchLen + segDx * 0.2;
+        const by = kink1y + ny * side * branchLen + segDy * 0.2;
+        draw.shadowBlur = 5;
+        draw.strokeStyle = `hsla(${hue}, 90%, 80%, ${fade * 0.32})`;
+        draw.lineWidth = 0.9;
+        draw.beginPath();
+        draw.moveTo(kink1x, kink1y);
+        draw.lineTo(bx, by);
+        draw.stroke();
+      }
+    }
+    draw.restore();
+  }
+
+  // The point itself: brighter and larger the more it is singing, with a
+  // brief compress-and-rebound pulse on click for tactile feedback.
   const px = pointer.x * width;
   const py = pointer.y * height;
-  const glowRadius = 24 + presence * 70;
+  const pulseAge = now - lastClickAt;
+  const pulse =
+    pulseAge >= 0 && pulseAge < CLICK_PULSE_MS
+      ? 1 - 0.2 * Math.exp(-4 * (pulseAge / CLICK_PULSE_MS)) * Math.cos((pulseAge / CLICK_PULSE_MS) * Math.PI * 3)
+      : 1;
+  const glowRadius = (ORB_BASE_RADIUS + presence * ORB_PRESENCE_RADIUS) * pulse;
   const glow = draw.createRadialGradient(px, py, 0, px, py, glowRadius);
   const hue = hueFor(pointer.y);
   glow.addColorStop(0, `hsla(${hue}, 90%, 75%, ${0.15 + presence * 0.55})`);
@@ -265,52 +400,58 @@ function render(now: number): void {
   draw.arc(px, py, glowRadius, 0, Math.PI * 2);
   draw.fill();
 
-  // Bubble: a tap or a space-press, rising and popping.
+  // Bubble burst: orb -> pressure -> membrane breaks -> fragments/rings
+  // disappear. A few thin rings expand from the centre, each gap widening
+  // as it grows so the ring reads as breaking apart rather than a clean
+  // pop, plus a handful of small glowing fragments scattering from the edge.
   for (let i = bubbles.length - 1; i >= 0; i--) {
     const bubble = bubbles[i];
     if (!bubble) continue;
     const age = now - bubble.bornAt;
-    if (age > BUBBLE_LIFE_MS) {
+    if (age > BUBBLE_LIFE_MS + 40) {
       bubbles.splice(i, 1);
       continue;
     }
-    const progress = age / BUBBLE_LIFE_MS;
-    const radius = 6 + progress * 42;
-    const rise = progress * 46;
-    const alpha = (1 - progress) * 0.6;
-    draw.beginPath();
-    draw.arc(bubble.x * width, bubble.y * height - rise, radius, 0, Math.PI * 2);
-    draw.strokeStyle = `hsla(${bubble.hue}, 85%, 80%, ${alpha})`;
-    draw.lineWidth = 2;
-    draw.stroke();
-  }
+    const bx = bubble.x * width;
+    const by = bubble.y * height;
 
-  // Lightning: a fast gesture, cracking bright then gone.
-  for (let i = flashes.length - 1; i >= 0; i--) {
-    const flash = flashes[i];
-    if (!flash) continue;
-    const age = now - flash.bornAt;
-    if (age > FLASH_LIFE_MS) {
-      flashes.splice(i, 1);
-      continue;
+    for (const ring of bubble.rings) {
+      const ringAge = age - ring.delay;
+      if (ringAge < 0) continue;
+      const progress = clamp01(ringAge / BUBBLE_LIFE_MS);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      const radius = 3 + eased * ring.maxRadius;
+      const alpha = (1 - progress) * 0.45;
+      if (alpha <= 0) continue;
+      const gap = Math.min(2.6, ring.gapWidth * (0.4 + progress * 1.6));
+      const start = ring.gapAngle + gap / 2;
+      const end = ring.gapAngle + Math.PI * 2 - gap / 2;
+      draw.beginPath();
+      draw.arc(bx, by, radius, start, end);
+      draw.strokeStyle = `hsla(${bubble.hue}, 90%, 80%, ${alpha})`;
+      draw.lineWidth = 1.3;
+      draw.shadowColor = `hsla(${bubble.hue}, 90%, 75%, ${alpha})`;
+      draw.shadowBlur = 5 * (1 - progress);
+      draw.stroke();
     }
-    const alpha = 1 - age / FLASH_LIFE_MS;
-    const fx = flash.x * width;
-    const fy = flash.y * height;
-    draw.strokeStyle = `hsla(200, 100%, 92%, ${alpha})`;
-    draw.lineWidth = 1.5;
-    draw.beginPath();
-    let x = fx;
-    let y = fy;
-    let angle = flash.angle;
-    draw.moveTo(x, y);
-    for (let seg = 0; seg < 4; seg++) {
-      angle += (Math.random() - 0.5) * 1.4;
-      x += Math.cos(angle) * 18;
-      y += Math.sin(angle) * 18;
-      draw.lineTo(x, y);
+
+    for (const frag of bubble.fragments) {
+      const fragAge = age - frag.delay;
+      if (fragAge < 0) continue;
+      const progress = clamp01(fragAge / BUBBLE_LIFE_MS);
+      const eased = 1 - Math.pow(1 - progress, 2);
+      const dist = eased * frag.dist;
+      const alpha = (1 - progress) * 0.6;
+      if (alpha <= 0) continue;
+      const fx = bx + Math.cos(frag.angle) * dist;
+      const fy = by + Math.sin(frag.angle) * dist;
+      draw.beginPath();
+      draw.arc(fx, fy, frag.size * (1 - progress * 0.5), 0, Math.PI * 2);
+      draw.fillStyle = `hsla(${bubble.hue}, 95%, 85%, ${alpha})`;
+      draw.shadowColor = `hsla(${bubble.hue}, 95%, 80%, ${alpha})`;
+      draw.shadowBlur = 4;
+      draw.fill();
     }
-    draw.stroke();
   }
 }
 
