@@ -20,14 +20,19 @@
       <nav aria-label="Primary">
         <a href="./">Home</a>
       </nav>
+      <div class="hand-ui">
+        <button id="hand-toggle" type="button" aria-pressed="false">HAND CONTROL</button>
+        <p class="hand-note">camera processed locally</p>
+      </div>
     </header>
     <main>
       <h1 class="visually-hidden">Bubble, dew, lightning</h1>
       <canvas
         id="stage"
         data-testid="stage"
-        aria-label="An instrument. Move the mouse, touch the screen, or press arrow keys and space to play."
+        aria-label="An instrument. Move the mouse, touch the screen, press arrow keys and space, or turn on Hand Control to play with a tracked hand."
       ></canvas>
+      <video id="hand-video" playsinline muted aria-hidden="true"></video>
       <p class="caption" data-testid="caption">
         如夢幻泡影，如露亦如電 &mdash; &ldquo;like a dream, a phantom, a bubble, a shadow; like dew, like
         lightning&rdquo;, the Diamond S&#363;tra&rsquo;s closing line, and this instrument&rsquo;s six moods.

@@ -13,8 +13,13 @@ const scriptSrc = doc.querySelector('script[type="module"]')?.getAttribute("src"
 const script = readFileSync(resolve("dist", scriptSrc), "utf8");
 
 describe("an instrument, not a playback deck", () => {
-  it("ships no <audio> or <video> element — sound is synthesised, not played back", () => {
-    expect(doc.querySelector("audio, video")).toBeNull();
+  it("ships no <audio> element and no <video> with a playback source — sound is synthesised, not played back", () => {
+    // A <video> is allowed as a live camera sink for the optional hand-control
+    // input (see hand.ts) as long as it names no src to play back.
+    expect(doc.querySelector("audio")).toBeNull();
+    for (const video of doc.querySelectorAll("video")) {
+      expect(video.hasAttribute("src")).toBe(false);
+    }
   });
 
   it("builds its sound with the Web Audio API", () => {

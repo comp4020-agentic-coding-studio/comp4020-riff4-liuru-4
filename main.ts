@@ -1,9 +1,12 @@
 // An instrument: one mechanic — a point in space, wherever it comes from
-// (pointer, touch or the arrow keys) — drives everything else. Moving it
-// sings; letting it sit still lets the tone fade like dew; a tap or the
-// space bar bursts a bubble; moving it fast cracks like lightning. The
-// six-as-ifs of the Diamond Sūtra's closing line supply the vocabulary for
-// what one continuous gesture sounds and looks like, not six separate toys.
+// (pointer, touch, the arrow keys, or a tracked hand) — drives everything
+// else. Moving it sings; letting it sit still lets the tone fade like dew; a
+// tap or the space bar bursts a bubble; moving it fast cracks like lightning.
+// The six-as-ifs of the Diamond Sūtra's closing line supply the vocabulary
+// for what one continuous gesture sounds and looks like, not six separate
+// toys.
+
+import { HandController, type HandPoll } from "./hand.ts";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#stage");
 if (!canvas) throw new Error("missing #stage canvas");
@@ -15,6 +18,21 @@ const draw = ink;
 interface Point {
   x: number;
   y: number;
+}
+
+// The one shape every input device speaks, so pointer/touch, keyboard and a
+// tracked hand all drive the same audio+visual logic below instead of each
+// getting their own copy of it. `active` means "this tick carries an
+// intentional position update" (not merely "the device is present") — that
+// distinction is what lets a still tracked hand fall through to Dew instead
+// of holding presence up forever; see hand.ts's noise-tolerance gating.
+export type InputSource = "pointer" | "keyboard" | "hand";
+export interface InstrumentInput {
+  x: number;
+  y: number;
+  active: boolean;
+  pinch: boolean;
+  source: InputSource;
 }
 
 interface AudioGraph {
@@ -91,8 +109,12 @@ let lastFrameAt = 0;
 const bubbles: Bubble[] = [];
 const trail: TrailPoint[] = [];
 const heldKeys = new Set<string>();
+const pinchState: Record<InputSource, boolean> = { pointer: false, keyboard: false, hand: false };
 
 let audio: AudioGraph | null = null;
+let handController: HandController | null = null;
+let handEnabled = false;
+let handDetected = false;
 
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
@@ -238,10 +260,21 @@ function setPointer(x: number, y: number, now: number): void {
   });
   while (trail.length && now - trail[0]!.bornAt > TRAIL_PRUNE_MS) trail.shift();
 
+  // Every input source funnels through here (see applyInput below), so a
+  // fast hand swipe cracks the same lightning a fast mouse swipe does.
   if (audio && speed > LIGHTNING_SPEED && now - lastLightningAt > LIGHTNING_COOLDOWN_MS) {
     lastLightningAt = now;
     lightningCrack();
   }
+}
+
+function applyInput(input: InstrumentInput, now: number): void {
+  if (input.active) setPointer(input.x, input.y, now);
+  if (input.pinch && !pinchState[input.source]) {
+    ensureAudio();
+    pluckBubble();
+  }
+  pinchState[input.source] = input.pinch;
 }
 
 function normalisePointer(event: PointerEvent): Point {
@@ -252,17 +285,22 @@ function normalisePointer(event: PointerEvent): Point {
   };
 }
 
-function updateKeyboardMovement(dt: number, now: number): void {
-  if (heldKeys.size === 0) return;
+function updateKeyboardInput(dt: number, now: number): void {
   let dx = 0;
   let dy = 0;
   if (heldKeys.has("ArrowLeft")) dx -= 1;
   if (heldKeys.has("ArrowRight")) dx += 1;
   if (heldKeys.has("ArrowUp")) dy -= 1;
   if (heldKeys.has("ArrowDown")) dy += 1;
-  if (dx === 0 && dy === 0) return;
-  const length = Math.hypot(dx, dy) || 1;
-  setPointer(pointer.x + (dx / length) * KEY_SPEED * dt, pointer.y + (dy / length) * KEY_SPEED * dt, now);
+  const moving = dx !== 0 || dy !== 0;
+  let x = pointer.x;
+  let y = pointer.y;
+  if (moving) {
+    const length = Math.hypot(dx, dy) || 1;
+    x = pointer.x + (dx / length) * KEY_SPEED * dt;
+    y = pointer.y + (dy / length) * KEY_SPEED * dt;
+  }
+  applyInput({ x, y, active: moving, pinch: heldKeys.has(" "), source: "keyboard" }, now);
 }
 
 function updatePresence(dt: number, now: number): void {
@@ -400,6 +438,18 @@ function render(now: number): void {
   draw.arc(px, py, glowRadius, 0, Math.PI * 2);
   draw.fill();
 
+  // A tracked hand gets a faint ring instead of any on-screen text — the
+  // subtlest way to say "you're seen" without competing with the artwork.
+  // Sized relative to the current orb glow radius, so it still tracks
+  // correctly now that the orb has its own click-pulse animation.
+  if (handDetected) {
+    draw.beginPath();
+    draw.arc(px, py, glowRadius + 6, 0, Math.PI * 2);
+    draw.strokeStyle = `hsla(${hue}, 90%, 85%, 0.35)`;
+    draw.lineWidth = 1;
+    draw.stroke();
+  }
+
   // Bubble burst: orb -> pressure -> membrane breaks -> fragments/rings
   // disappear. A few thin rings expand from the centre, each gap widening
   // as it grows so the ring reads as breaking apart rather than a clean
@@ -455,10 +505,68 @@ function render(now: number): void {
   }
 }
 
+// Hand tracking as a third input source — see hand.ts. It only produces
+// InstrumentInput values; everything downstream is the same audio/visual
+// code pointer and keyboard already drive via applyInput.
+const handVideo = document.querySelector<HTMLVideoElement>("#hand-video");
+const handToggle = document.querySelector<HTMLButtonElement>("#hand-toggle");
+
+async function startHandControl(): Promise<void> {
+  if (!handVideo || !handToggle) return;
+  handToggle.textContent = "STARTING CAMERA…";
+  try {
+    const controller = new HandController(handVideo);
+    await controller.start();
+    handController = controller;
+    handEnabled = true;
+    handToggle.setAttribute("aria-pressed", "true");
+    handToggle.textContent = "HAND CONTROL · ON";
+  } catch {
+    handController = null;
+    handEnabled = false;
+    handToggle.setAttribute("aria-pressed", "false");
+    handToggle.textContent = "CAMERA UNAVAILABLE";
+    setTimeout(() => {
+      if (!handEnabled) handToggle.textContent = "HAND CONTROL";
+    }, 2600);
+  }
+}
+
+function stopHandControl(): void {
+  handController?.stop();
+  handController = null;
+  handEnabled = false;
+  handDetected = false;
+  pinchState.hand = false;
+  if (handToggle) {
+    handToggle.setAttribute("aria-pressed", "false");
+    handToggle.textContent = "HAND CONTROL";
+  }
+}
+
+handToggle?.addEventListener("click", () => {
+  if (handEnabled) stopHandControl();
+  else void startHandControl();
+});
+
+function updateHandInput(now: number, dt: number): void {
+  if (!handEnabled || !handController) {
+    handDetected = false;
+    return;
+  }
+  const poll: HandPoll = handController.poll(now, dt);
+  handDetected = poll.handPresent;
+  if (handToggle) {
+    handToggle.textContent = poll.handPresent ? "HAND CONTROL · ON" : "NO HAND DETECTED";
+  }
+  applyInput(poll.input, now);
+}
+
 function frame(now: number): void {
   const dt = lastFrameAt ? Math.min(0.05, (now - lastFrameAt) / 1000) : 0;
   lastFrameAt = now;
-  updateKeyboardMovement(dt, now);
+  updateKeyboardInput(dt, now);
+  updateHandInput(now, dt);
   updatePresence(dt, now);
   updateAudioParams();
   render(now);
@@ -466,29 +574,27 @@ function frame(now: number): void {
 }
 
 stage.addEventListener("pointerdown", (event) => {
-  ensureAudio();
   stage.setPointerCapture(event.pointerId);
   const { x, y } = normalisePointer(event);
-  setPointer(x, y, performance.now());
-  pluckBubble();
+  applyInput({ x, y, active: true, pinch: true, source: "pointer" }, performance.now());
 });
 
 stage.addEventListener("pointermove", (event) => {
   const { x, y } = normalisePointer(event);
-  setPointer(x, y, performance.now());
+  applyInput({ x, y, active: true, pinch: (event.buttons & 1) === 1, source: "pointer" }, performance.now());
 });
 
 stage.addEventListener("pointerup", (event) => {
   if (stage.hasPointerCapture(event.pointerId)) stage.releasePointerCapture(event.pointerId);
+  applyInput({ x: pointer.x, y: pointer.y, active: false, pinch: false, source: "pointer" }, performance.now());
 });
 
 window.addEventListener("keydown", (event) => {
   if (event.key.startsWith("Arrow")) {
     heldKeys.add(event.key);
     event.preventDefault();
-  } else if (event.key === " " && !event.repeat) {
-    ensureAudio();
-    pluckBubble();
+  } else if (event.key === " ") {
+    heldKeys.add(" ");
     event.preventDefault();
   }
 });
