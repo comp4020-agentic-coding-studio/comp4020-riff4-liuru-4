@@ -5,6 +5,9 @@
 // six-as-ifs of the Diamond Sūtra's closing line supply the vocabulary for
 // what one continuous gesture sounds and looks like, not six separate toys.
 
+import { recordFrame } from "./history";
+import { drawRibbons } from "./ribbon";
+
 const canvas = document.querySelector<HTMLCanvasElement>("#stage");
 if (!canvas) throw new Error("missing #stage canvas");
 const stage = canvas;
@@ -233,6 +236,7 @@ function resizeStage(): void {
 }
 
 function render(now: number): void {
+  recordFrame(now, pointer.x, pointer.y, presence);
   const width = stage.clientWidth;
   const height = stage.clientHeight;
 
@@ -251,6 +255,8 @@ function render(now: number): void {
     draw.fillStyle = gradient;
     draw.fillRect(0, 0, width, height);
   }
+
+  drawRibbons(draw, width, height);
 
   // The point itself: brighter and larger the more it is singing.
   const px = pointer.x * width;
